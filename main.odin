@@ -4,8 +4,7 @@ import "core:fmt"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
-import sdl "vendor:sdl3"
-import sdlimg "vendor:sdl3/image"
+import rl "vendor:raylib"
 
 main :: proc() {
 	app: App
@@ -15,16 +14,14 @@ main :: proc() {
 	}
 	defer app_shutdown(&app)
 
-	sdl.SetRenderDrawColor(app.renderer, 20, 20, 20, 255)
-
 	running := true
-	for running {
+	for running && !rl.WindowShouldClose() {
 		running = app_update(&app)
+		rl.BeginDrawing()
+		defer rl.EndDrawing()
 
-		sdl.RenderClear(app.renderer)
+		rl.ClearBackground(rl.Color{20, 20, 20, 255})
 
 		app_render(&app)
-
-		sdl.RenderPresent(app.renderer)
 	}
 }

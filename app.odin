@@ -1,24 +1,23 @@
 package main
 
+import "core:c"
 import "core:fmt"
 import "core:strings"
 import "core:thread"
 import "utils"
-import sdl "vendor:sdl3"
-import sdlimg "vendor:sdl3/image"
+import rl "vendor:raylib"
 
 THUMBNAIL_HEIGHT: f32 = 100
 THUMBNAIL_PADDING: f32 = 10
 
 App :: struct {
-	window:                 ^sdl.Window,
-	renderer:               ^sdl.Renderer,
-	loaded_surfaces:        [dynamic]^sdl.Surface,
-	loaded_textures:        [dynamic]Texture_Desc,
+	loaded_textures:        [dynamic]rl.Texture,
 	imgs:                   []string,
 	texture_load_ahead_amt: u32,
 	active_texture_index:   u32,
 	last_loaded_index:      u32,
+	font:                   rl.Font,
+	zen_mode:               bool,
 }
 
 create_app :: proc(app: ^App, args: []string) -> bool {
@@ -31,42 +30,14 @@ create_app :: proc(app: ^App, args: []string) -> bool {
 
 	imgs := utils.get_image_paths(args[1])
 
-	init_success := sdl.Init(sdl.INIT_VIDEO)
-	if !init_success {
-		fmt.printfln("failed to initialize sdl")
-		return false
-	}
+	rl.SetConfigFlags({rl.ConfigFlag.WINDOW_RESIZABLE})
+	rl.InitWindow(1280, 720, strings.clone_to_cstring("window"))
+	rl.SetExitKey(rl.KeyboardKey.Q)
 
-	creation_success := sdl.CreateWindowAndRenderer(
-		"window",
-		1280,
-		720,
-		sdl.WINDOW_RESIZABLE,
-		&app.window,
-		&app.renderer,
-	)
-
-	if !creation_success {
-		fmt.printfln("failed to create window and renderer: %s", sdl.GetError())
-		sdl.Quit()
-		return false
-	}
-
-	texture := sdlimg.LoadTexture(app.renderer, strings.clone_to_cstring(imgs[0]))
-	if texture == nil {
-		fmt.println("failed to load image")
-		sdl.DestroyRenderer(app.renderer)
-		sdl.DestroyWindow(app.window)
-		sdl.Quit()
-		return false
-	}
-
-	textures: [dynamic]Texture_Desc
+	textures: [dynamic]rl.Texture
 	for i := 0; i < 1; i += 1 {
-		texture := sdlimg.LoadTexture(app.renderer, strings.clone_to_cstring(imgs[i]))
-		if texture != nil {
-			append(&textures, create_texture_desc(texture))
-		}
+		texture := rl.LoadTexture(strings.clone_to_cstring(imgs[i]))
+		append(&textures, texture)
 	}
 
 	app.loaded_textures = textures
@@ -74,42 +45,23 @@ create_app :: proc(app: ^App, args: []string) -> bool {
 	app.active_texture_index = 0
 	app.last_loaded_index = app.active_texture_index
 
-	t := thread.create(load_next_textures_async)
-	t.data = app
-	thread.start(t)
+	font := rl.LoadFont("IosevkaTerm-Regular.ttf")
+	app.font = font
+
+	app.zen_mode = true
 
 	return true
 }
 
-load_next_textures_async :: proc(t: ^thread.Thread) {
-	data := (^App)(t.data)
-	load_next_textures(data)
-}
-
 load_next_textures :: proc(app: ^App) {
-	for i := 0; i < len(app.imgs); i += 1 {
-		surf := sdlimg.Load(strings.clone_to_cstring(app.imgs[i]))
-		if surf != nil {
-			append(&app.loaded_surfaces, surf)
-		}
+	if int(app.last_loaded_index) < len(app.imgs) - 1 {
+		append(
+			&app.loaded_textures,
+			rl.LoadTexture(strings.clone_to_cstring(app.imgs[app.last_loaded_index + 1])),
+		)
 		app.last_loaded_index += 1
 	}
 }
-
-// load_next_textures :: proc(app: ^App) {
-// 	if app.last_loaded_index < u32(len(app.imgs) - 1) &&
-// 	   app.last_loaded_index <= app.active_texture_index + app.texture_load_ahead_amt {
-// 		fmt.printfln("loading texture: %s", app.imgs[app.last_loaded_index + 1])
-// 		texture := sdlimg.LoadTexture(
-// 			app.renderer,
-// 			strings.clone_to_cstring(app.imgs[app.last_loaded_index + 1]),
-// 		)
-// 		if texture != nil {
-// 			append(&app.loaded_textures, create_texture_desc(texture))
-// 		}
-// 		app.last_loaded_index += 1
-// 	}
-// }
 
 next_texture :: proc(app: ^App) {
 	if app.active_texture_index == u32(len(app.imgs) - 1) {
@@ -127,45 +79,54 @@ prev_texture :: proc(app: ^App) {
 }
 
 app_update :: proc(app: ^App) -> bool {
-	event: sdl.Event
-	for sdl.PollEvent(&event) {
-		#partial switch event.type {
-		case .QUIT:
-			return false
-		case .KEY_DOWN:
-			#partial switch event.key.scancode {
-			case .Q:
-				return false
-			case .H:
-				prev_texture(app)
-			case .L:
-				next_texture(app)
-			case .B:
-				app.active_texture_index = 0
-			case .E:
-				app.active_texture_index = app.last_loaded_index - 1
-			}
-		}
+	#partial switch rl.GetKeyPressed() {
+	case .H:
+		prev_texture(app)
+	case .L:
+		next_texture(app)
+	case .B:
+		app.active_texture_index = 0
+	case .E:
+		app.active_texture_index = app.last_loaded_index
+	case .Z:
+		app.zen_mode = !app.zen_mode
 	}
 
-	for i := len(app.loaded_textures); i < len(app.loaded_surfaces); i += 1 {
-		texture := sdl.CreateTextureFromSurface(app.renderer, app.loaded_surfaces[i])
-		append(&app.loaded_textures, create_texture_desc(texture))
-		// free unnecessary data but keep the junk ptr (bad practice ik)
-		sdl.DestroySurface(app.loaded_surfaces[i])
-	}
+	load_next_textures(app)
 
 	return true
 }
 
 app_render :: proc(app: ^App) {
 	render_active_texture(app)
-	render_thumbnails(app)
+	if !app.zen_mode {
+		render_thumbnails(app)
+		render_img_text(app)
+	}
+}
+
+render_img_text :: proc(app: ^App) {
+	rl.DrawTextEx(
+		app.font,
+		strings.clone_to_cstring(app.imgs[app.active_texture_index]),
+		{THUMBNAIL_PADDING, THUMBNAIL_PADDING},
+		32.0,
+		1.0,
+		rl.RAYWHITE,
+	)
 }
 
 render_thumbnails :: proc(app: ^App) {
-	scrw, scrh: i32
-	sdl.GetWindowSize(app.window, &scrw, &scrh)
+	scrw := rl.GetScreenWidth()
+	scrh := rl.GetScreenHeight()
+
+	rl.DrawRectangle(
+		0.0,
+		scrh - i32(THUMBNAIL_HEIGHT + (THUMBNAIL_PADDING * 2)),
+		scrw,
+		i32(THUMBNAIL_HEIGHT + (THUMBNAIL_PADDING * 2)),
+		rl.Color{20, 20, 20, 255},
+	)
 
 	y: f32 = f32(scrh) - THUMBNAIL_HEIGHT - THUMBNAIL_PADDING
 	x: f32 = THUMBNAIL_PADDING
@@ -173,94 +134,68 @@ render_thumbnails :: proc(app: ^App) {
 
 
 	for x < f32(scrh) && texture_index < u32(len(app.loaded_textures)) {
-		texture := &app.loaded_textures[texture_index]
+		texture := app.loaded_textures[texture_index]
 
-		srect := sdl.FRect {
-			x = 0,
-			y = 0,
-			w = texture.width,
-			h = texture.height,
+		srect := rl.Rectangle {
+			x      = 0,
+			y      = 0,
+			width  = f32(texture.width),
+			height = f32(texture.height),
 		}
 
-		drect := sdl.FRect {
-			x = x,
-			y = y,
-			w = texture.width * (f32(THUMBNAIL_HEIGHT) / texture.height),
-			h = THUMBNAIL_HEIGHT,
+		drect := rl.Rectangle {
+			x      = x,
+			y      = y,
+			width  = f32(texture.width) * (f32(THUMBNAIL_HEIGHT) / f32(texture.height)),
+			height = THUMBNAIL_HEIGHT,
 		}
 
-		sdl.RenderTexture(app.renderer, texture.handle, &srect, &drect)
+		rl.DrawTexturePro(texture, srect, drect, {0, 0}, 0.0, rl.RAYWHITE)
 
 		if texture_index == app.active_texture_index {
-			render_box(app, drect)
+			rl.DrawRectangleLinesEx(drect, 2.0, rl.RAYWHITE)
 		}
 
-		x += drect.w + THUMBNAIL_PADDING
+		x += f32(drect.width) + THUMBNAIL_PADDING
 		texture_index += 1
 	}
-
-
-}
-
-render_box :: proc(app: ^App, rect: sdl.FRect) {
-	THICKNESS: f32 = 2.0
-	r, g, b, a: u8
-	sdl.GetRenderDrawColor(app.renderer, &r, &g, &b, &a)
-	sdl.SetRenderDrawColor(app.renderer, 255, 255, 255, 255)
-
-	sdl.RenderRect(app.renderer, &sdl.FRect{x = rect.x, y = rect.y, w = rect.w, h = THICKNESS})
-	sdl.RenderRect(
-		app.renderer,
-		&sdl.FRect{x = rect.x, y = rect.y + rect.h - THICKNESS, w = rect.w, h = THICKNESS},
-	)
-	sdl.RenderRect(app.renderer, &sdl.FRect{x = rect.x, y = rect.y, w = THICKNESS, h = rect.h})
-	sdl.RenderRect(
-		app.renderer,
-		&sdl.FRect{x = rect.x + rect.w - THICKNESS, y = rect.y, w = THICKNESS, h = rect.h},
-	)
-
-	sdl.SetRenderDrawColor(app.renderer, r, g, b, a)
 }
 
 render_active_texture :: proc(app: ^App) {
 	active_texture := app.loaded_textures[app.active_texture_index]
 
-	w, h: i32
-	sdl.GetWindowSize(app.window, &w, &h)
-	scale := min(f32(w) / active_texture.width, f32(h) / active_texture.height)
-	dest_w := active_texture.width * scale
-	dest_h := active_texture.height * scale
+	w := rl.GetScreenWidth()
+	h := rl.GetScreenHeight()
+	scale := min(f32(w) / f32(active_texture.width), f32(h) / f32(active_texture.height))
+	dest_w := f32(active_texture.width) * scale
+	dest_h := f32(active_texture.height) * scale
 
-	srect := sdl.FRect {
-		x = 0,
-		y = 0,
-		w = active_texture.width,
-		h = active_texture.height,
+	srect := rl.Rectangle {
+		x      = 0,
+		y      = 0,
+		width  = f32(active_texture.width),
+		height = f32(active_texture.height),
 	}
 
-	drect := sdl.FRect {
-		x = (f32(w) - dest_w) / 2.0,
-		y = (f32(h) - dest_h) / 2.0,
-		w = dest_w,
-		h = dest_h,
+	drect := rl.Rectangle {
+		x      = f32((f32(w) - dest_w) / 2.0),
+		y      = f32((f32(h) - dest_h) / 2.0),
+		width  = f32(dest_w),
+		height = f32(dest_h),
 	}
 
-	sdl.RenderTexture(app.renderer, active_texture.handle, &srect, &drect)
+	rl.DrawTexturePro(active_texture, srect, drect, {0, 0}, 0.0, rl.RAYWHITE)
 }
 
 
 app_shutdown :: proc(app: ^App) {
+	for texture in app.loaded_textures {
+		rl.UnloadTexture(texture)
+	}
+	rl.UnloadFont(app.font)
+
 	delete(app.loaded_textures)
 	delete(app.imgs)
 
-	sdl.DestroyRenderer(app.renderer)
-	sdl.DestroyWindow(app.window)
-	sdl.Quit()
-
-	for &desc in app.loaded_textures {
-		free_texture_desc(&desc)
-	}
-	for &surf in app.loaded_surfaces {
-		sdl.DestroySurface(surf)
-	}
+	rl.CloseWindow()
 }
